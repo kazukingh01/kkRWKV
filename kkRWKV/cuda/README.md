@@ -1,0 +1,1 @@
+see: https://github.com/BlinkDL/RWKV-LM/tree/20d3a1f4eefa7c0f9762d8b94c2f6ee1eac1b27d/RWKV-v7/train_temp/cuda

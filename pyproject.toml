@@ -1,0 +1,15 @@
+[project]
+name = "kkRWKV"
+version = "1.0.0"
+requires-python = ">= 3.12.10"
+description = "My RWKV models package"
+dependencies = [
+    'kklogger @ git+https://github.com/kazukingh01/kklogger.git@f6ddcc099da0102a14a62d67bede1b1c30eaf839',
+]
+
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["kkRWKV", "kkRWKV.cuda"]
