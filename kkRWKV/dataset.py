@@ -1,20 +1,15 @@
 import torch
-import pandas as pd
 import numpy as np
 
 
-class TimeSeriesDataset(torch.utils.data.Dataset):
-    def __init__(self, df: pd.DataFrame, cols_data: list[str], cols_gt: list[str], seq_len: int=128):
-        assert isinstance(df, pd.DataFrame)
-        assert isinstance(cols_data, list) and len(cols_data) > 0
-        assert isinstance(cols_gt,   list) and len(cols_gt) > 0
-        assert isinstance(seq_len,   int)  and seq_len > 0
-        self.seq_len   = seq_len
-        self.cols_data = cols_data
-        self.cols_gt   = cols_gt
-        self.data      = df[self.cols_data].to_numpy().astype(np.float32)
-        self.gt        = df[self.cols_gt  ].to_numpy().astype(np.int64)
-        self.indexes   = np.arange(seq_len, len(self.data), seq_len // 4)
+class RandomDataset(torch.utils.data.Dataset):
+    def __init__(self, n_features: int, n_symbols: int, n_label: int=5, seq_len: int=128, n_samples: int=1000000):
+        self.n_features = n_features
+        self.n_symbols  = n_symbols
+        self.seq_len    = seq_len
+        self.data       = np.random.rand(n_samples, n_features).astype(np.float32)
+        self.gt         = np.random.randint(0, n_label, (n_samples, n_symbols)).astype(np.int64)
+        self.indexes    = np.arange(seq_len, len(self.data), seq_len // 4)
 
     def __len__(self):
         return len(self.indexes)

@@ -97,7 +97,12 @@ source ~/.bashrc
 ```bash
 cd ~ && git clone https://github.com/kazukingh01/kkRWKV.git 
 cd ~/kkRWKV/ && python -m venv venv && source venv/bin/activate
-pip install torch --upgrade --index-url https://download.pytorch.org/whl/cu126
-pip install pytorch-lightning==1.9.5 deepspeed wandb ninja --upgrade
+pip install torch==2.8.0 --upgrade --index-url https://download.pytorch.org/whl/cu126
 pip install -e .
+```
+
+# Test
+
+```bash
+python ./tests/test.py
 ```

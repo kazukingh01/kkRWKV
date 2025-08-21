@@ -4,7 +4,11 @@ version = "1.0.0"
 requires-python = ">= 3.12.10"
 description = "My RWKV models package"
 dependencies = [
-    'kklogger @ git+https://github.com/kazukingh01/kklogger.git@f6ddcc099da0102a14a62d67bede1b1c30eaf839',
+    'numpy>=2.3.2',
+    'lightning==2.5.2',
+    'tensorboard==2.20.0',
+    'deepspeed==0.17.4',
+    'ninja==1.13.0',
 ]
 
 [build-system]
