@@ -25,7 +25,7 @@ if __name__ == "__main__":
     from kkRWKV.model import RWKV, RWKV_FOR_TRAINING
     model = RWKV_FOR_TRAINING(
         n_features, n_symbols,
-        seq_len=seq_len, mode_float="bf16", num_classes=n_label,
+        seq_len=seq_len, num_classes=n_label,
         embd_dim=128, n_layers=3,
     )
     logger  = pl_loggers.TensorBoardLogger(save_dir="logs/")

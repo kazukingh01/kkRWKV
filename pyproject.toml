@@ -9,6 +9,7 @@ dependencies = [
     'tensorboard==2.20.0',
     'deepspeed==0.17.4',
     'ninja==1.13.0',
+    'kklogger @ git+https://github.com/kazukingh01/kklogger.git@f6ddcc099da0102a14a62d67bede1b1c30eaf839'
 ]
 
 [build-system]

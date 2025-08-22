@@ -6,15 +6,16 @@ import torch.nn as nn
 from torch.nn import functional as F
 import lightning as L
 from deepspeed.ops.adam import FusedAdam
-
-
-torch.set_printoptions(threshold=1000, linewidth=80, precision=4, profile="default")
+from kklogger import set_logger
+LOGGER = set_logger(__name__)
 
 # local modules
 import kkRWKV
 from kkRWKV.metrics import calc_cross_entropy, calc_accuracy
 from kkRWKV.block import CustomEmbLayer, CustomHeadLayer, time_mixing, channel_mixing
 
+# env
+torch.set_printoptions(threshold=1000, linewidth=80, precision=4, profile="default")
 HEAD_SIZE = 64
 assert HEAD_SIZE == 64 # Fix !!
 
@@ -22,8 +23,9 @@ assert HEAD_SIZE == 64 # Fix !!
 class RWKV(nn.Module):
     def __init__(
         self, n_features: int, n_symbols: int, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
-        num_classes: int=5, mode_float: str="fp16", is_cpu: bool=False, is_train: bool=False, is_jit: bool=True
+        num_classes: int=5, mode_float: str="bf16", is_cpu: bool=False, is_jit: bool=True
     ):
+        LOGGER.info("START")
         super().__init__()
         assert isinstance(n_features,  int) and n_features  > 0
         assert isinstance(embd_dim,    int) and embd_dim    > 0
@@ -33,15 +35,13 @@ class RWKV(nn.Module):
         assert isinstance(num_classes, int) and num_classes > 1
         assert isinstance(mode_float,  str) and mode_float in ["fp16", "bf16", "fp32"]
         assert isinstance(is_cpu, bool)
-        assert isinstance(is_train, bool)
         assert isinstance(is_jit, bool)
         assert embd_dim % HEAD_SIZE == 0
         assert seq_len  % 32 == 0
-        if is_train: assert mode_float == "bf16"
         ## set environment variables
         os.environ["RWKV_HEAD_SIZE"] = f"{HEAD_SIZE}" # Fix !!
         os.environ["TORCH_CUDA_ARCH_LIST"] = "8.9"
-        os.environ["RWKV_TRAIN"]     = "1" if is_train else "0"
+        os.environ["RWKV_TRAIN"]     = "1" if mode_float == "bf16" else "0"
         os.environ["RWKV_JIT_ON"]    = "1" if is_jit   else "0"
         importlib.reload(kkRWKV.block)
         from kkRWKV.block import Block
@@ -65,6 +65,11 @@ class RWKV(nn.Module):
         ## others
         self.is_cpu       = is_cpu
         self.mode_float   = mode_float
+        self._dtype       = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "fp32": torch.float32
+        }[mode_float]
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
         if self.mode_float == "fp32":
@@ -73,6 +78,7 @@ class RWKV(nn.Module):
         else:
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cuda.matmul.allow_tf32 = True
+        LOGGER.info("END")
 
     def forward(self, x: torch.Tensor):
         output = self.emb(x)
@@ -84,7 +90,7 @@ class RWKV(nn.Module):
         return output
 
     def generate_init_weight(self):
-        print("### Init model weight ...")
+        LOGGER.info("START")
         m = {}
         n_params = 0
         with torch.no_grad():
@@ -152,10 +158,12 @@ class RWKV(nn.Module):
         print('model params', n_params)
         gc.collect()
         self.load_state_dict(m, strict=True)
+        LOGGER.info("END")
         return m
     
     @classmethod
     def load_from_model_path(cls, model_path: str, num_classes: int=5, mode_float: str="fp32", is_cpu: bool=False, is_jit: bool=True) -> Self:
+        LOGGER.info("START")
         params    = torch.load(model_path, map_location="cpu")["state_dict"]
         embd_dim, n_features = params["emb.linear.weight"].shape
         seq_len   = params["emb.ln.weight"].shape[0]
@@ -165,18 +173,37 @@ class RWKV(nn.Module):
         n_symbols = out_dim // num_classes
         model = cls(
             n_features, n_symbols, embd_dim=embd_dim, n_layers=n_layers, seq_len=seq_len,
-            num_classes=num_classes, mode_float=mode_float, is_cpu=is_cpu, is_train=False, is_jit=is_jit
+            num_classes=num_classes, mode_float=mode_float, is_cpu=is_cpu, is_jit=is_jit
         )
         model.load_state_dict(params, strict=True)
-        return model
+        LOGGER.info("END")
+        return model.to(model._dtype)
+    
+    def predict_proba(self, x: torch.Tensor):
+        assert isinstance(x, torch.Tensor)
+        assert x.ndim in [2,3]
+        with torch.no_grad():
+            if x.ndim == 2:
+                out = x.unsqueeze(0)
+            else:
+                out = x
+            out = out.to(self._dtype).to("cuda" if not self.is_cpu else "cpu")
+            out = self.forward(out)
+            for i in range(out.shape[-1] // self.num_classes):
+                out[:, i * self.num_classes : (i + 1) * self.num_classes] = \
+                    F.softmax(out[:, i * self.num_classes:(i + 1) * self.num_classes], dim=-1)
+            if x.ndim == 2:
+                out = out.squeeze(0)
+            return out
 
 
 class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
     def __init__(
         self, n_features: int, n_symbols: int, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
         num_classes: int=5, weight_decay: float=0.0, lr_init: float=6e-4, betas: tuple[float, float]=(0.9, 0.99),
-        adam_eps: float=1e-18, mode_float: str="fp16", is_cpu: bool=False
+        adam_eps: float=1e-18, is_cpu: bool=False
     ):
+        LOGGER.info("START")
         assert isinstance(weight_decay, (int, float)) and weight_decay >= 0.0
         assert isinstance(lr_init,   float) and lr_init > 0.0
         assert isinstance(betas,     tuple) and len(betas) == 2
@@ -184,15 +211,17 @@ class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
         assert isinstance(adam_eps,  float) and adam_eps > 0.0
         super().__init__(
             n_features, n_symbols, embd_dim=embd_dim, n_layers=n_layers, seq_len=seq_len, 
-            num_classes=num_classes, mode_float=mode_float, is_cpu=is_cpu, is_train=True, is_jit=True
+            num_classes=num_classes, mode_float="bf16", is_cpu=is_cpu, is_jit=True
         )
         ## optimizer config
         self.weight_decay = weight_decay
         self.lr_init      = lr_init
         self.betas        = betas
         self.adam_eps     = adam_eps
+        LOGGER.info("END")
 
     def configure_optimizers(self):
+        LOGGER.info("START")
         lr_decay = set()
         lr_1x = set()
         lr_2x = set()
@@ -222,9 +251,11 @@ class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
 
         if self.weight_decay > 0:
             optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": self.weight_decay, "my_lr_scale": 1.0}]
-            return FusedAdam(optim_groups, lr=self.lr_init, betas=self.betas, eps=self.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+            opt = FusedAdam(optim_groups, lr=self.lr_init, betas=self.betas, eps=self.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
         else:
-            return FusedAdam(optim_groups, lr=self.lr_init, betas=self.betas, eps=self.adam_eps, bias_correction=True, adam_w_mode=False, weight_decay=0, amsgrad=False)
+            opt = FusedAdam(optim_groups, lr=self.lr_init, betas=self.betas, eps=self.adam_eps, bias_correction=True, adam_w_mode=False, weight_decay=0, amsgrad=False)
+        LOGGER.info("END")
+        return opt
 
     def training_step(self, batch, _):
         data, targets = batch
@@ -247,6 +278,7 @@ class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
 
 class RWKV_FOR_INFERENCE(torch.jit.ScriptModule):
     def __init__(self, model_path: str, dtype: torch.dtype=torch.float32):
+        LOGGER.info("START")
         super().__init__()
         self.dtype = dtype
         
@@ -284,6 +316,7 @@ class RWKV_FOR_INFERENCE(torch.jit.ScriptModule):
         self.z['blocks.0.att.v1'] = self.z['blocks.0.att.a1'] # actually ignored
         self.z['blocks.0.att.v2'] = self.z['blocks.0.att.a2'] # actually ignored
         self.eval()
+        LOGGER.info("END")
 
     def forward(self, x: torch.Tensor, seq_len: int=None):
         assert x.ndim == 2
