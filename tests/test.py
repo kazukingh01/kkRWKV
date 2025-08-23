@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from lightning.pytorch import seed_everything
 from lightning.pytorch import loggers as pl_loggers
 
-from kkRWKV.dataset import RandomDataset
+from kkRWKV.dataset import RandomDataset2
 from kkRWKV.trainer import TrainCallback
 
 
@@ -12,19 +12,22 @@ if __name__ == "__main__":
     seed_everything(1)
 
     # data
-    n_features = 10
-    n_symbols  = 5
-    n_label    = 5
-    seq_len    = 128
-    dataset_train = RandomDataset(n_features, n_symbols, n_label=n_label, seq_len=seq_len, n_samples=10000)
-    dataset_valid = RandomDataset(n_features, n_symbols, n_label=n_label, seq_len=seq_len, n_samples=10000)
+    n_feat       = 10
+    n_label_1    = 3
+    n_label_2    = 5
+    n_feat_other = 20
+    n_symbols    = 5
+    n_label      = 5
+    seq_len      = 128
+    dataset_train = RandomDataset2(n_feat, n_label_1, n_label_2, n_feat_other, n_symbols, n_label=n_label, seq_len=seq_len, n_samples=10000)
+    dataset_valid = RandomDataset2(n_feat, n_label_1, n_label_2, n_feat_other, n_symbols, n_label=n_label, seq_len=seq_len, n_samples=10000)
     data_loader_train = DataLoader(dataset_train, shuffle=False, pin_memory=True, batch_size=128, num_workers=4, persistent_workers=True, drop_last=True)
     data_loader_valid = DataLoader(dataset_valid, shuffle=False, pin_memory=True, batch_size=128, num_workers=4, persistent_workers=True, drop_last=True)
 
     # model for training
     from kkRWKV.model import RWKV, RWKV_FOR_TRAINING
     model = RWKV_FOR_TRAINING(
-        n_features, n_symbols,
+        n_feat, n_label_1, n_label_2, n_feat_other, n_symbols,
         seq_len=seq_len, num_classes=n_label,
         embd_dim=128, n_layers=3,
     )

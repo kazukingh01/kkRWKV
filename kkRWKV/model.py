@@ -22,18 +22,23 @@ assert HEAD_SIZE == 64 # Fix !!
 
 class RWKV(nn.Module):
     def __init__(
-        self, n_features: int, n_symbols: int, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
+        self, n_feat_ln: int, n_label_1: int, n_label_2: int, n_feat_other: int,
+        n_symbols: int, dim_labels: int=32, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
         num_classes: int=5, mode_float: str="bf16", is_cpu: bool=False, is_jit: bool=True
     ):
         LOGGER.info("START")
         super().__init__()
-        assert isinstance(n_features,  int) and n_features  > 0
-        assert isinstance(embd_dim,    int) and embd_dim    > 0
-        assert isinstance(n_layers,    int) and n_layers    > 0
-        assert isinstance(seq_len,     int) and seq_len     > 0
-        assert isinstance(n_symbols,   int) and n_symbols   > 0
-        assert isinstance(num_classes, int) and num_classes > 1
-        assert isinstance(mode_float,  str) and mode_float in ["fp16", "bf16", "fp32"]
+        assert isinstance(n_feat_ln,    int) and n_feat_ln > 0
+        assert isinstance(n_label_1,    int) and n_label_1    > 0
+        assert isinstance(n_label_2,    int) and n_label_2    > 0
+        assert isinstance(n_feat_other, int) and n_feat_other > 0
+        assert isinstance(dim_labels,   int) and dim_labels   > 0
+        assert isinstance(embd_dim,     int) and embd_dim     > 0
+        assert isinstance(n_layers,     int) and n_layers     > 0
+        assert isinstance(seq_len,      int) and seq_len      > 0
+        assert isinstance(n_symbols,    int) and n_symbols    > 0
+        assert isinstance(num_classes,  int) and num_classes  > 1
+        assert isinstance(mode_float,   str) and mode_float in ["fp16", "bf16", "fp32"]
         assert isinstance(is_cpu, bool)
         assert isinstance(is_jit, bool)
         assert embd_dim % HEAD_SIZE == 0
@@ -52,7 +57,7 @@ class RWKV(nn.Module):
         args.head_size    = HEAD_SIZE  # n_head = args.dim_att // self.head_size
         args.n_layer      = n_layers
         ## model
-        self.emb          = CustomEmbLayer(n_features, seq_len, embd_dim)
+        self.emb          = CustomEmbLayer(n_feat_ln, n_label_1, dim_labels, n_label_2, dim_labels, n_feat_other, seq_len, embd_dim)
         self.blocks       = nn.ModuleList([Block(args, i) for i in range(n_layers)])
         self.ln_out       = nn.LayerNorm(embd_dim)
         self.head         = CustomHeadLayer(embd_dim, n_symbols * num_classes)
@@ -117,6 +122,9 @@ class RWKV(nn.Module):
                     scale = -1e-4
                     nn.init.uniform_(m[n], a=scale, b=-scale)
                     print(f" [scale {scale}]")
+                elif n.startswith("emb.bn."):
+                    m[n] = p
+                    print()
                 elif n == "head.fnn.weight":
                     m[n] = p
                     scale = 0.5
@@ -162,17 +170,29 @@ class RWKV(nn.Module):
         return m
     
     @classmethod
+    def params_from_state_dict(cls, params: dict):
+        embd_dim, n_all = params["emb.linear.weight"].shape
+        seq_len         = params["emb.ln.weight"].shape[0]
+        n_feat_ln       = params["emb.bn.weight"].shape[0]
+        n_label_1, dim_emb1_out = params["emb.emb1.weight"].shape
+        n_label_2, dim_emb2_out = params["emb.emb2.weight"].shape
+        assert dim_emb1_out == dim_emb2_out
+        n_feat_other    = n_all - n_feat_ln - n_feat_ln - dim_emb1_out - dim_emb2_out
+        n_layers        = len(set([x.split(".")[1] for x in params.keys() if x.startswith("blocks.")]))
+        out_dim         = params["head.fnn.weight"].shape[0]
+        return embd_dim, seq_len, n_feat_ln, n_label_1, n_label_2, dim_emb1_out, n_feat_other, n_layers, out_dim
+
+    @classmethod
     def load_from_model_path(cls, model_path: str, num_classes: int=5, mode_float: str="fp32", is_cpu: bool=False, is_jit: bool=True) -> Self:
         LOGGER.info("START")
-        params    = torch.load(model_path, map_location="cpu")["state_dict"]
-        embd_dim, n_features = params["emb.linear.weight"].shape
-        seq_len   = params["emb.ln.weight"].shape[0]
-        n_layers  = len(set([x.split(".")[1] for x in params.keys() if x.startswith("blocks.")]))
-        out_dim   = params["head.fnn.weight"].shape[0]
+        params = torch.load(model_path, map_location="cpu")["state_dict"]
+        embd_dim, seq_len, n_feat_ln, n_label_1, n_label_2, dim_emb1_out, n_feat_other, n_layers, out_dim = \
+            cls.params_from_state_dict(params)
         assert out_dim % num_classes == 0
         n_symbols = out_dim // num_classes
         model = cls(
-            n_features, n_symbols, embd_dim=embd_dim, n_layers=n_layers, seq_len=seq_len,
+            n_feat_ln, n_label_1, n_label_2, n_feat_other,
+            n_symbols, embd_dim=embd_dim, dim_labels=dim_emb1_out, n_layers=n_layers, seq_len=seq_len,
             num_classes=num_classes, mode_float=mode_float, is_cpu=is_cpu, is_jit=is_jit
         )
         model.load_state_dict(params, strict=True)
@@ -199,7 +219,8 @@ class RWKV(nn.Module):
 
 class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
     def __init__(
-        self, n_features: int, n_symbols: int, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
+        self, n_feat_ln: int, n_label_1: int, n_label_2: int, n_feat_other: int,
+        n_symbols: int, dim_labels: int=32, embd_dim: int=512, n_layers: int=6, seq_len: int=512, 
         num_classes: int=5, weight_decay: float=0.0, lr_init: float=6e-4, betas: tuple[float, float]=(0.9, 0.99),
         adam_eps: float=1e-18, is_cpu: bool=False
     ):
@@ -210,7 +231,8 @@ class RWKV_FOR_TRAINING(RWKV, L.LightningModule):
         for x in betas: assert isinstance(x, float) and 0.0 <= x <= 1.0
         assert isinstance(adam_eps,  float) and adam_eps > 0.0
         super().__init__(
-            n_features, n_symbols, embd_dim=embd_dim, n_layers=n_layers, seq_len=seq_len, 
+            n_feat_ln, n_label_1, n_label_2, n_feat_other, n_symbols,
+            dim_labels=dim_labels, embd_dim=embd_dim, n_layers=n_layers, seq_len=seq_len, 
             num_classes=num_classes, mode_float="bf16", is_cpu=is_cpu, is_jit=True
         )
         ## optimizer config
@@ -283,9 +305,11 @@ class RWKV_FOR_INFERENCE(torch.jit.ScriptModule):
         self.dtype = dtype
         
         self.z = torch.load(model_path, map_location='cpu')["state_dict"]
+        embd_dim, seq_len, n_feat_ln, n_label_1, n_label_2, dim_emb1_out, n_feat_other, n_layers, out_dim = \
+            RWKV.params_from_state_dict(self.z)
         self.n_head, self.head_size = self.z['blocks.0.att.r_k'].shape
-        self.embd_dim = self.z["emb.linear.weight"].shape[0]
-        self.n_layer = max([int(x.split(".")[1]) for x in self.z.keys() if x.startswith("blocks")]) + 1
+        self.embd_dim = embd_dim
+        self.n_layer  = n_layers
 
         # main blocks
         for k in list(self.z.keys()):
@@ -301,14 +325,11 @@ class RWKV_FOR_INFERENCE(torch.jit.ScriptModule):
             if k.endswith('att.r_k'): self.z[k] = self.z[k].flatten()
         
         # embedding layer
-        _, n_features = self.z["emb.linear.weight"].shape
-        seq_len  = self.z["emb.ln.weight"].shape[0]
-        self.emb = CustomEmbLayer(n_features, seq_len, self.embd_dim).to(self.dtype)
+        self.emb = CustomEmbLayer(n_feat_ln, n_label_1, dim_emb1_out, n_label_2, dim_emb1_out, n_feat_other, seq_len, embd_dim).to(self.dtype)
         self.emb.load_state_dict({x.replace("emb.", ""): y for x, y in self.z.items() if x.startswith("emb.")}, strict=True)
 
         # head layer
-        output_dim, _ = self.z["head.fnn.weight"].shape
-        self.head     = CustomHeadLayer(self.embd_dim, output_dim).to(self.dtype)
+        self.head = CustomHeadLayer(self.embd_dim, out_dim).to(self.dtype)
         self.head.load_state_dict({x.replace("head.", ""): y for x, y in self.z.items() if x.startswith("head.")}, strict=True)
 
         # others
