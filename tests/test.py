@@ -27,7 +27,7 @@ if __name__ == "__main__":
     # model for training
     from kkRWKV.model import RWKV, RWKV_FOR_TRAINING
     model = RWKV_FOR_TRAINING(
-        n_feat, n_label_1, n_label_2, n_feat_other, n_symbols,
+        n_feat, (n_label_1, n_label_2), (8, 8), n_feat_other, n_symbols,
         seq_len=seq_len, num_classes=n_label,
         embd_dim=128, n_layers=3,
     )

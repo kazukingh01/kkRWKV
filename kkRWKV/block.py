@@ -309,44 +309,66 @@ class L2Wrap(torch.autograd.Function):
 
 class CustomEmbLayer(nn.Module):
     def __init__(
-        self, dim_ln: int, dim_emb1_in: int, dim_emb1_out: int, dim_emb2_in: int, dim_emb2_out: int, 
+        self, dim_ln: int, dims_emb_in: list[int], dims_emb_out: list[int], 
         dim_other: int, seq_len: int, output_dim: int
     ):
         super().__init__()
-        assert isinstance(dim_ln,     int) and dim_ln     > 0
-        assert isinstance(dim_emb1_in, int) and dim_emb1_in > 0
-        assert isinstance(dim_emb1_out, int) and dim_emb1_out > 0
-        assert isinstance(dim_emb2_in, int) and dim_emb2_in > 0
-        assert isinstance(dim_emb2_out, int) and dim_emb2_out > 0
-        assert isinstance(dim_other,  int) and dim_other  > 0
-        assert isinstance(seq_len,    int) and seq_len    > 0
-        assert isinstance(output_dim, int) and output_dim > 0
+        assert isinstance(dim_ln,      int) and dim_ln     > 0
+        assert isinstance(dims_emb_in,  (list, tuple)) and all(isinstance(x, int) and x > 0 for x in dims_emb_in)
+        assert isinstance(dims_emb_out, (list, tuple)) and all(isinstance(x, int) and x > 0 for x in dims_emb_out)
+        assert len(dims_emb_in) == len(dims_emb_out)
+        assert isinstance(dim_other,   int) and dim_other  > 0
+        assert isinstance(seq_len,     int) and seq_len    > 0
+        assert isinstance(output_dim,  int) and output_dim > 0
         self.dim_ln       = dim_ln
-        self.dim_emb1_in  = dim_emb1_in
-        self.dim_emb1_out = dim_emb1_out
-        self.dim_emb2_in  = dim_emb2_in
-        self.dim_emb2_out = dim_emb2_out
+        self.dims_emb_in  = dims_emb_in
+        self.dims_emb_out = dims_emb_out
         self.dim_other    = dim_other
         self.output_dim   = output_dim
         self.ln           = nn.LayerNorm(seq_len, elementwise_affine=True)
         self.bn           = nn.BatchNorm1d(num_features=dim_ln)
-        self.emb1         = nn.Embedding(num_embeddings=dim_emb1_in, embedding_dim=dim_emb1_out)
-        self.emb2         = nn.Embedding(num_embeddings=dim_emb2_in, embedding_dim=dim_emb2_out)
+        self.embs         = nn.ModuleList([])
+        for x, y in zip(dims_emb_in, dims_emb_out):
+            self.embs.append(nn.Embedding(num_embeddings=x, embedding_dim=y))
+        self.seq1         = nn.Sequential(
+            nn.Linear(self.dim_ln * 2, 128, bias=False),
+            nn.BatchNorm1d(128),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+        )
+        self.seq2         = nn.Sequential(
+            nn.Linear(self.dim_other, 128, bias=False),
+            nn.BatchNorm1d(128),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+        )
         self.linear       = nn.Linear(
-            2 * self.dim_ln + self.dim_emb1_out + self.dim_emb2_out + self.dim_other, self.output_dim, bias=True
+            self.dim_ln, self.output_dim, bias=False
         )
 
     def forward(self, x: torch.Tensor):
+        return self.forward2(x)
+
+    def forward1(self, x: torch.Tensor):
         assert x.ndim == 3
         in_ln    = x[:, :, :self.dim_ln]
-        in_emb1  = x[:, :,  self.dim_ln    ].to(torch.long)
-        in_emb2  = x[:, :,  self.dim_ln + 1].to(torch.long)
-        in_other = x[:, :,  self.dim_ln + 2:]
+        in_other = x[:, :,  self.dim_ln:self.dim_ln+self.dim_other]
         out_ln   = self.ln(in_ln.permute(0, 2, 1)).permute(0, 2, 1)
         out_bn   = self.bn(in_ln.permute(0, 2, 1)).permute(0, 2, 1)
-        out_emb1 = self.emb1(in_emb1)
-        out_emb2 = self.emb2(in_emb2)
-        output   = self.linear(torch.cat([out_ln, out_bn, out_emb1, out_emb2, in_other], dim=-1))
+        out_seq1 = self.seq1(torch.cat([out_ln, out_bn], dim=-1))
+        out_seq2 = self.seq2(in_other)
+        list_out_emb = []
+        for i_emb, emb in enumerate(self.embs):
+            in_emb  = x[:, :,  self.dim_ln + i_emb].to(torch.long)
+            out_emb = emb(in_emb)
+            list_out_emb.append(out_emb)
+        output   = self.linear(torch.cat([out_seq1, out_seq2] + list_out_emb, dim=-1))
+        return output
+
+    def forward2(self, x: torch.Tensor):
+        assert x.ndim == 3
+        output = self.ln(x.permute(0, 2, 1)).permute(0, 2, 1)
+        output = self.linear(output)
         return output
 
 
@@ -359,7 +381,8 @@ class CustomHeadLayer(nn.Module):
 
     def forward(self, x):
         x = self.fnn(x)
-        x = x.sum(dim=1)
+        # x = x.sum(dim=1)
+        x = x[:, -1, :]
         return x
 
 
